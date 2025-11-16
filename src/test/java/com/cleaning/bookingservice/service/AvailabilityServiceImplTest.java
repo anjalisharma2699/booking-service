@@ -2,6 +2,7 @@ package com.cleaning.bookingservice.service;
 
 import com.cleaning.bookingservice.dto.request.AvailabilityRequest;
 import com.cleaning.bookingservice.dto.response.AvailabilityResponse;
+import com.cleaning.bookingservice.entity.AvailabilityBlock;
 import com.cleaning.bookingservice.entity.CleanerProfessional;
 import com.cleaning.bookingservice.entity.Vehicle;
 import com.cleaning.bookingservice.repository.AvailabilityBlockRepository;
@@ -67,13 +68,13 @@ public class AvailabilityServiceImplTest {
     @Test
     void testCalculateFreeSlots() {
 
-        List<Map<String, Object>> blocks = List.of(
-                Map.of(
-                        "start_datetime", Timestamp.valueOf("2025-11-16 10:00:00"),
-                        "end_datetime", Timestamp.valueOf("2025-11-16 12:00:00"),
-                        "block_type", "BOOKED"
-                )
-        );
+        AvailabilityBlock booked = new AvailabilityBlock();
+        booked.setCleanerId(1L);
+        booked.setStartDatetime(Timestamp.valueOf("2025-11-16 10:00:00").toLocalDateTime());
+        booked.setEndDatetime(Timestamp.valueOf("2025-11-16 12:00:00").toLocalDateTime());
+        booked.setBlockType("BOOKED");
+
+        List<AvailabilityBlock> blocks = List.of(booked);
 
         List<String> slots = service.calculateFreeSlots(blocks, LocalDate.of(2025, 11, 16));
 
