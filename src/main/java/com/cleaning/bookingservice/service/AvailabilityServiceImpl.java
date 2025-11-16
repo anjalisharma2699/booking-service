@@ -11,6 +11,7 @@ import com.cleaning.bookingservice.repository.AvailabilityBlockRepository;
 import com.cleaning.bookingservice.repository.CleanerRepository;
 import com.cleaning.bookingservice.repository.VehicleRepository;
 import org.antlr.v4.runtime.misc.Interval;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.*;
@@ -20,18 +21,14 @@ import java.util.stream.Collectors;
 @Service
 public class AvailabilityServiceImpl implements AvailabilityService {
 
-    private final CleanerRepository cleanerRepository;
-    private final VehicleRepository vehicleRepository;
-    private final AvailabilityBlockRepository availabilityBlockRepository;
+    @Autowired
+    private CleanerRepository cleanerRepository;
 
-    public AvailabilityServiceImpl(CleanerRepository cleanerRepository,
-                                   VehicleRepository vehicleRepository,
-                                   AvailabilityBlockRepository availabilityBlockRepository) {
+    @Autowired
+    private VehicleRepository vehicleRepository;
 
-        this.cleanerRepository = cleanerRepository;
-        this.vehicleRepository = vehicleRepository;
-        this.availabilityBlockRepository = availabilityBlockRepository;
-    }
+    @Autowired
+    private AvailabilityBlockRepository availabilityBlockRepository;
 
     @Override
     public AvailabilityResponse checkAvailability(AvailabilityRequest request) {
