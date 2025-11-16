@@ -76,7 +76,7 @@ public class AvailabilityServiceImplTest {
 
         List<AvailabilityBlock> blocks = List.of(booked);
 
-        List<String> slots = service.calculateFreeSlots(blocks, LocalDate.of(2025, 11, 16));
+        List<String> slots = service.calculateFreeSlots(blocks);
 
         assertTrue(slots.contains("08:00-10:00"));
         assertTrue(slots.contains("12:00-22:00"));
