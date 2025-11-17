@@ -63,29 +63,54 @@ public interface AvailabilityBlockRepository extends BaseRepository<Availability
             LocalDateTime end
     );
 
+    @Query("""
+    SELECT CASE WHEN COUNT(a) > 0 THEN TRUE ELSE FALSE END
+    FROM AvailabilityBlock a
+    WHERE a.cleanerId = :cleanerId
+      AND a.bookingId <> :bookingId
+      AND a.startDatetime < :end
+      AND a.endDatetime > :start
+""")
+    boolean hasOverlapExcludingBooking(Long cleanerId,
+                                       Long bookingId,
+                                       LocalDateTime start,
+                                       LocalDateTime end);
+
 
 
     @Modifying
-    @Query(value = """
-        INSERT INTO availability_blocks (cleaner_id, start_datetime, end_datetime, block_type)
-        VALUES (:cleanerId, :start, :end, :type)
-        """, nativeQuery = true)
-    void insertBlock(@Param("cleanerId") Long cleanerId,
-                     @Param("start") LocalDateTime start,
-                     @Param("end") LocalDateTime end,
-                     @Param("type") String type);
+    @Query("""
+       UPDATE AvailabilityBlock a
+       SET a.startDatetime = :newStart,
+           a.endDatetime = :newEnd
+       WHERE a.cleanerId = :cleanerId
+         AND a.startDatetime = :oldStart
+         AND a.endDatetime = :oldEnd
+         AND a.blockType = :type
+       """)
+    void updateBlock(Long cleanerId,
+                     LocalDateTime oldStart,
+                     LocalDateTime oldEnd,
+                     LocalDateTime newStart,
+                     LocalDateTime newEnd,
+                     String type);
+
 
     @Modifying
-    @Query(value = """
-        DELETE FROM availability_blocks
-        WHERE cleaner_id = :cleanerId
-          AND start_datetime = :start
-          AND end_datetime = :end
-          AND block_type = :type
-        """, nativeQuery = true)
-    void deleteBlocksFor(@Param("cleanerId") Long cleanerId,
-                         @Param("start") LocalDateTime start,
-                         @Param("end") LocalDateTime end,
-                         @Param("type") String type);
+    @Query("""
+       UPDATE AvailabilityBlock a
+       SET a.startDatetime = :newBreakStart,
+           a.endDatetime = :newBreakEnd
+       WHERE a.cleanerId = :cleanerId
+         AND a.startDatetime = :oldBreakStart
+         AND a.endDatetime = :oldBreakEnd
+         AND a.blockType = :type
+       """)
+    void updateBreakBlock(Long cleanerId,
+                          LocalDateTime oldBreakStart,
+                          LocalDateTime oldBreakEnd,
+                          LocalDateTime newBreakStart,
+                          LocalDateTime newBreakEnd,
+                          String type);
 
 }

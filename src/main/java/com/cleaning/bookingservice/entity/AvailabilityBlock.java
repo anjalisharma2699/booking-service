@@ -16,4 +16,7 @@ public class AvailabilityBlock {
     private LocalDateTime startDatetime;
     private LocalDateTime endDatetime;
     private String blockType;
+    @Column(name = "booking_id")
+    private Long bookingId;
+
 }

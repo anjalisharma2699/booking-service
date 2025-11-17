@@ -81,7 +81,7 @@ public class BookingServiceImpl implements BookingService {
 
         return BookingMapper.toResponse(savedBooking);
     }
-    
+
     // VALIDATION
     private void validateRequest(CreateBookingRequest req) {
         Objects.requireNonNull(req, "request must not be null");
@@ -113,12 +113,12 @@ public class BookingServiceImpl implements BookingService {
             throw new BookingConflictException("Bookings are only allowed between 08:00 and 22:00");
         }
 
-        if(startDt.plusHours(duration).toLocalTime().isBefore(WORK_START) || startDt.plusHours(duration).toLocalTime().isAfter(WORK_END)){
+        if (startDt.plusHours(duration).toLocalTime().isBefore(WORK_START) || startDt.plusHours(duration).toLocalTime().isAfter(WORK_END)) {
             throw new BookingConflictException("Bookings are only allowed between 08:00 and 22:00");
         }
     }
 
-    
+
     // LOGGING
     private void logBookingAttempt(CreateBookingRequest req,
                                    LocalDate date,
@@ -207,7 +207,7 @@ public class BookingServiceImpl implements BookingService {
 
         return bookingRepository.save(booking);
     }
-    
+
     // CLEANER FREE CHECK
     private boolean isCleanerFree(Long cleanerId, LocalDateTime start, LocalDateTime end) {
         return !availabilityBlockRepository.hasOverlap(cleanerId, start, end);
@@ -234,6 +234,7 @@ public class BookingServiceImpl implements BookingService {
 
             AvailabilityBlock booked = new AvailabilityBlock();
             booked.setCleanerId(cleaner.getId());
+            booked.setBookingId(booking.getId());
             booked.setStartDatetime(start);
             booked.setEndDatetime(end);
             booked.setBlockType(BookingBlockType.BOOKED.name());
@@ -248,6 +249,7 @@ public class BookingServiceImpl implements BookingService {
             if (!breakExists) {
                 AvailabilityBlock breakBlock = new AvailabilityBlock();
                 breakBlock.setCleanerId(cleaner.getId());
+                breakBlock.setBookingId(booking.getId());
                 breakBlock.setStartDatetime(breakStart);
                 breakBlock.setEndDatetime(breakEnd);
                 breakBlock.setBlockType(BookingBlockType.BREAK.name());
@@ -264,86 +266,92 @@ public class BookingServiceImpl implements BookingService {
         Booking booking = bookingRepository.findById(bookingId)
                 .orElseThrow(() -> new RuntimeException("Booking not found: " + bookingId));
 
+        // ---- VALIDATE inputs ----
+        validateUpdateRequest(req);
+
         LocalDate date = LocalDate.parse(req.getDate());
-        LocalTime start = LocalTime.parse(req.getStartTime());
-        LocalDateTime startDt = LocalDateTime.of(date, start);
-        LocalDateTime endDt = startDt.plusHours(req.getDurationHours());
+        LocalTime startTime = LocalTime.parse(req.getStartTime());
+        LocalDateTime newStart = LocalDateTime.of(date, startTime);
+        LocalDateTime newEnd = newStart.plusHours(req.getDurationHours());
 
-        booking.setStartDatetime(startDt);
-        booking.setEndDatetime(endDt);
-        booking.setDurationInHours(req.getDurationHours());
-        booking.setRequestedCleanerCount(req.getCleanerCount());
+        validateWorkingDay(date);
+        validateWorkingHours(startTime, newStart, req.getDurationHours());
 
-        CleanerProfessional firstCleaner = booking.getAssignedCleaners().get(0).getCleaner();
-        Long vehicleId = firstCleaner.getVehicle().getId();
-
-        AvailabilityRequest aReq = new AvailabilityRequest();
-        aReq.setDate(req.getDate());
-        aReq.setStartTime(req.getStartTime());
-        aReq.setDurationHours(req.getDurationHours());
-        aReq.setCleanerCount(req.getCleanerCount());
-
-        AvailabilityResponse availability = availabilityService.checkAvailability(aReq);
-
-        AvailabilityResponse.VehicleAvailability vehicleAvailability =
-                availability.getAvailableVehicles().stream()
-                        .filter(v -> v.getVehicleId().equals(vehicleId))
-                        .findFirst()
-                        .orElseThrow(() -> new RuntimeException("Vehicle not available for updated time"));
-
-        if (vehicleAvailability.getCleaners().size() < req.getCleanerCount()) {
-            throw new RuntimeException("Not enough cleaners available for updated booking.");
+        // ---- Get existing cleaners (unchanged) ----
+        List<BookingCleaner> assignedCleaners = booking.getAssignedCleaners();
+        if (assignedCleaners.isEmpty()) {
+            throw new RuntimeException("Booking has no assigned cleaners.");
         }
 
-        List<CleanerProfessional> newCleaners =
-                vehicleAvailability.getCleaners().stream()
-                        .limit(req.getCleanerCount())
-                        .map(c -> cleanerRepository.findById(c.getCleanerId()).get())
-                        .collect(Collectors.toList());
+        // ---- Validate new time window for every cleaner ----
+        for (BookingCleaner bc : assignedCleaners) {
 
-        List<BookingCleaner> oldAssignments = booking.getAssignedCleaners();
+            Long cleanerId = bc.getCleaner().getId();
 
-        for (BookingCleaner ac : oldAssignments) {
-
-            availabilityBlockRepository.deleteBlocksFor(
-                    ac.getId(), startDt, endDt, BookingBlockType.BOOKED.name()
+            boolean conflict = availabilityBlockRepository.hasOverlapExcludingBooking(
+                    cleanerId,
+                    bookingId,
+                    newStart,
+                    newEnd
             );
 
-            availabilityBlockRepository.deleteBlocksFor(
-                    ac.getId(),
-                    endDt,
-                    endDt.plusMinutes(BookingServiceConstants.BREAK_MINUTES),
+            if (conflict) {
+                throw new BookingConflictException(
+                        "Cleaner " + cleanerId + " is busy during the new requested time");
+            }
+        }
+
+        // ---- UPDATE BOOKING ---
+        LocalDateTime oldStart = booking.getStartDatetime();
+        LocalDateTime oldEnd = booking.getEndDatetime();
+
+        booking.setStartDatetime(newStart);
+        booking.setEndDatetime(newEnd);
+        booking.setDurationInHours(req.getDurationHours());
+        bookingRepository.save(booking);
+
+        // ---- UPDATE Availability Blocks ----
+        for (BookingCleaner bc : assignedCleaners) {
+
+            Long cleanerId = bc.getCleaner().getId();
+
+            //  UPDATE existing BOOKED block
+            availabilityBlockRepository.updateBlock(
+                    cleanerId,
+                    oldStart,
+                    oldEnd,
+                    newStart,
+                    newEnd,
+                    BookingBlockType.BOOKED.name()
+            );
+
+            //  UPDATE existing BREAK block
+            availabilityBlockRepository.updateBreakBlock(
+                    cleanerId,
+                    oldEnd,
+                    oldEnd.plusMinutes(BookingServiceConstants.BREAK_MINUTES),
+                    newEnd,
+                    newEnd.plusMinutes(BookingServiceConstants.BREAK_MINUTES),
                     BookingBlockType.BREAK.name()
             );
         }
 
-        bookingCleanerRepository.deleteAll(oldAssignments);
-        booking.getAssignedCleaners().clear();
-
-        List<BookingCleaner> newAssignments = new ArrayList<>();
-
-        for (CleanerProfessional c : newCleaners) {
-            BookingCleaner ac = new BookingCleaner();
-            ac.setCleaner(c);
-            ac.setBooking(booking);
-            bookingCleanerRepository.save(ac);
-            newAssignments.add(ac);
-
-            availabilityBlockRepository.insertBlock(
-                    c.getId(),
-                    startDt,
-                    endDt,
-                    BookingBlockType.BOOKED.name()
-            );
-        }
-
-        booking.setAssignedCleaners(newAssignments);
-        bookingRepository.save(booking);
-
+        // ---- RESPONSE ----
         UpdateBookingResponse res = new UpdateBookingResponse();
         res.setBookingId(booking.getId());
         res.setMessage("Booking updated successfully");
 
         return res;
+    }
+
+    private void validateUpdateRequest(UpdateBookingRequest req) {
+
+        if (req.getDurationHours() != 2 && req.getDurationHours() != 4) {
+            throw new IllegalArgumentException("durationHours must be 2 or 4");
+        }
+
+        if (req.getCleanerCount() < 1 || req.getCleanerCount() > 3) {
+            throw new IllegalArgumentException("cleanerCount must be 1..3");
+        }
     }
 }

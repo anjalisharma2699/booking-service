@@ -1,29 +1,39 @@
 package com.cleaning.bookingservice.service;
 
 import com.cleaning.bookingservice.dto.request.CreateBookingRequest;
+import com.cleaning.bookingservice.dto.request.UpdateBookingRequest;
+import com.cleaning.bookingservice.dto.response.AvailabilityResponse;
 import com.cleaning.bookingservice.dto.response.BookingResponse;
+import com.cleaning.bookingservice.dto.response.UpdateBookingResponse;
 import com.cleaning.bookingservice.entity.*;
-import com.cleaning.bookingservice.repository.AvailabilityBlockRepository;
-import com.cleaning.bookingservice.repository.BookingRepository;
-import com.cleaning.bookingservice.repository.CleanerRepository;
-import com.cleaning.bookingservice.repository.VehicleRepository;
+import com.cleaning.bookingservice.repository.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.MockitoAnnotations;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+@ExtendWith(MockitoExtension.class)
 class BookingServiceImplTest {
 
     @InjectMocks
     private BookingServiceImpl bookingService;
+
+    @Mock
+    private AvailabilityService  availabilityService;
+
+    @Mock
+    private BookingCleanerRepository bookingCleanerRepository;
 
     @Mock
     private CleanerRepository cleanerRepository;
@@ -37,10 +47,6 @@ class BookingServiceImplTest {
     @Mock
     private AvailabilityBlockRepository availabilityBlockRepository;
 
-    @BeforeEach
-    void init() {
-        MockitoAnnotations.openMocks(this);
-    }
 
     private Vehicle vehicle(long id) {
         Vehicle v = new Vehicle();
@@ -199,6 +205,7 @@ class BookingServiceImplTest {
         // Create busy block for cleaner 1
         AvailabilityBlock busy = new AvailabilityBlock();
         busy.setCleanerId(1L);
+        busy.setBookingId(1L);
         busy.setStartDatetime(LocalDateTime.of(2025, 11, 16, 10, 0));
         busy.setEndDatetime(LocalDateTime.of(2025, 11, 16, 12, 0));
         busy.setBlockType("BOOKED");
@@ -225,4 +232,117 @@ class BookingServiceImplTest {
         assertEquals(1, res.getAssignedCleanerIds().size());
         assertEquals(2L, res.getAssignedCleanerIds().get(0)); // expect free cleaner
     }
+
+
+    // ---------------------------------------------------------------
+// UPDATE BOOKING TESTS
+// ---------------------------------------------------------------
+
+    @Test
+    void testUpdateBooking_Success() {
+
+        Booking booking = new Booking();
+        booking.setId(50L);
+        booking.setStartDatetime(LocalDateTime.of(2025, 11, 16, 10, 0));
+        booking.setEndDatetime(LocalDateTime.of(2025, 11, 16, 12, 0));
+
+        CleanerProfessional c1 = cleaner(1, 1);
+        BookingCleaner bc1 = bookingCleaner(booking, c1);
+        booking.setAssignedCleaners(List.of(bc1));
+
+        when(bookingRepository.findById(50L)).thenReturn(java.util.Optional.of(booking));
+
+        // AvailabilityService response
+        AvailabilityResponse.VehicleAvailability va = new AvailabilityResponse.VehicleAvailability();
+        va.setVehicleId(1L);
+
+        AvailabilityResponse.CleanerAvailability ca = new AvailabilityResponse.CleanerAvailability();
+        ca.setCleanerId(1L);
+        ca.setName("Cleaner 1");
+
+        va.setCleaners(List.of(ca));
+
+        AvailabilityResponse ar = new AvailabilityResponse();
+        ar.setAvailableVehicles(List.of(va));
+
+
+        UpdateBookingRequest req = new UpdateBookingRequest();
+        req.setDate("2025-11-16");
+        req.setStartTime("14:00");
+        req.setDurationHours(2);
+        req.setCleanerCount(1);
+
+        UpdateBookingResponse response = bookingService.updateBooking(50L, req);
+
+        assertNotNull(response);
+        assertEquals(50L, response.getBookingId());
+        assertEquals("Booking updated successfully", response.getMessage());
+
+        verify(bookingRepository).save(any());
+    }
+
+    @Test
+    void testUpdateBooking_BusyCleaner() {
+
+        Booking booking = new Booking();
+        booking.setId(60L);
+        booking.setStartDatetime(LocalDateTime.of(2025, 11, 16, 10, 0));
+        booking.setEndDatetime(LocalDateTime.of(2025, 11, 16, 12, 0));
+
+        CleanerProfessional c1 = cleaner(1, 1);
+        BookingCleaner bc1 = bookingCleaner(booking, c1);
+        booking.setAssignedCleaners(List.of(bc1));
+
+        // Old booking found
+        when(bookingRepository.findById(60L)).thenReturn(java.util.Optional.of(booking));
+
+        // Availability says cleaner *looks free*
+        AvailabilityResponse.VehicleAvailability va = new AvailabilityResponse.VehicleAvailability();
+        va.setVehicleId(1L);
+
+        AvailabilityResponse.CleanerAvailability ca = new AvailabilityResponse.CleanerAvailability();
+        ca.setCleanerId(1L);
+        va.setCleaners(List.of(ca));
+
+        AvailabilityResponse ar = new AvailabilityResponse();
+        ar.setAvailableVehicles(List.of(va));
+
+
+        // REAL overlap check → cleaner is actually busy
+        when(availabilityBlockRepository.hasOverlapExcludingBooking(
+                eq(1L),                               // cleanerId
+                eq(60L),
+                any(LocalDateTime.class),
+                any(LocalDateTime.class)
+        )).thenReturn(true);
+
+        UpdateBookingRequest req = new UpdateBookingRequest();
+        req.setDate("2025-11-16");
+        req.setStartTime("15:00");   // new time
+        req.setDurationHours(2);
+        req.setCleanerCount(1);
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> bookingService.updateBooking(60L, req));
+
+        assertTrue(ex.getMessage().toLowerCase().contains("busy"));
+    }
+
+    @Test
+    void testUpdateBooking_BookingNotFound() {
+
+        when(bookingRepository.findById(999L)).thenReturn(java.util.Optional.empty());
+
+        UpdateBookingRequest req = new UpdateBookingRequest();
+        req.setDate("2025-11-16");
+        req.setStartTime("10:00");
+        req.setDurationHours(2);
+        req.setCleanerCount(1);
+
+        RuntimeException ex = assertThrows(RuntimeException.class,
+                () -> bookingService.updateBooking(999L, req));
+
+        assertEquals("Booking not found: 999", ex.getMessage());
+    }
+
 }

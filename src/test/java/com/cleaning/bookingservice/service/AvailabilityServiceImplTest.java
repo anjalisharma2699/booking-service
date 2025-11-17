@@ -70,6 +70,7 @@ public class AvailabilityServiceImplTest {
 
         AvailabilityBlock booked = new AvailabilityBlock();
         booked.setCleanerId(1L);
+        booked.setBookingId(1L);
         booked.setStartDatetime(Timestamp.valueOf("2025-11-16 10:00:00").toLocalDateTime());
         booked.setEndDatetime(Timestamp.valueOf("2025-11-16 12:00:00").toLocalDateTime());
         booked.setBlockType("BOOKED");
