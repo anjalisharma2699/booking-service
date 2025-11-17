@@ -92,11 +92,6 @@ class BookingServiceImplTest {
         when(vehicleRepository.findAll()).thenReturn(List.of(v1));
         when(cleanerRepository.findByVehicle_Id(1L)).thenReturn(List.of(c1, c2));
 
-        // No busy blocks → all free
-        when(availabilityBlockRepository.findBlocksForCleaners(
-                List.of(1L, 2L), LocalDate.of(2025, 11, 16)
-        )).thenReturn(List.of());
-
         Booking saved = new Booking();
         saved.setId(100L);
         saved.setStartDatetime(LocalDateTime.of(2025, 11, 16, 10, 0));
@@ -209,11 +204,6 @@ class BookingServiceImplTest {
         busy.setStartDatetime(LocalDateTime.of(2025, 11, 16, 10, 0));
         busy.setEndDatetime(LocalDateTime.of(2025, 11, 16, 12, 0));
         busy.setBlockType("BOOKED");
-
-        // cleaner 2 has no busy blocks
-        when(availabilityBlockRepository.findBlocksForCleaners(
-                List.of(1L, 2L), LocalDate.of(2025, 11, 16)
-        )).thenReturn(List.of(busy));
 
         Booking saved = new Booking();
         saved.setId(200L);
