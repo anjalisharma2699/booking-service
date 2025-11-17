@@ -22,6 +22,8 @@ import java.time.*;
 import java.util.*;
 import java.util.stream.Collectors;
 
+import static com.cleaning.bookingservice.constants.BookingServiceConstants.BOOKING_NOT_POSSIBLE_FRIDAY_ERR_MSG;
+
 @Service
 public class BookingServiceImpl implements BookingService {
 
@@ -54,99 +56,159 @@ public class BookingServiceImpl implements BookingService {
     @Transactional
     public BookingResponse createBooking(CreateBookingRequest request) {
 
-        Objects.requireNonNull(request, "request must not be null");
+        validateRequest(request);
 
         LocalDate date = LocalDate.parse(request.getDate());
         LocalTime startTime = LocalTime.parse(request.getStartTime());
         LocalDateTime startDt = LocalDateTime.of(date, startTime);
+        LocalDateTime endDt = startDt.plusHours(request.getDurationHours());
 
-        if (request.getDurationHours() == null ||
-                !(request.getDurationHours() == 2 || request.getDurationHours() == 4)) {
+        validateWorkingDay(date);
+        validateWorkingHours(startTime, startDt, request.getDurationHours());
+
+        logBookingAttempt(request, date, startTime, endDt);
+
+        List<Long> vehicleIds = resolveVehicleOrder(request.getPreferredVehicleId());
+        List<CleanerProfessional> selectedCleaners =
+                findAvailableCleaners(vehicleIds, startDt, endDt, request.getRequestedCleanerCount());
+
+        verifyCleanerStillFree(selectedCleaners, startDt, endDt);
+
+        Booking savedBooking = saveBooking(startDt, endDt, request.getDurationHours(),
+                request.getRequestedCleanerCount(), selectedCleaners);
+
+        createAvailabilityBlocksTransactional(savedBooking, selectedCleaners);
+
+        return BookingMapper.toResponse(savedBooking);
+    }
+    
+    // VALIDATION
+    private void validateRequest(CreateBookingRequest req) {
+        Objects.requireNonNull(req, "request must not be null");
+
+        if (req.getDurationHours() == null ||
+                (req.getDurationHours() != 2 && req.getDurationHours() != 4)) {
             throw new IllegalArgumentException("durationHours must be 2 or 4");
         }
 
-        if (request.getRequestedCleanerCount() == null ||
-                request.getRequestedCleanerCount() < 1 ||
-                request.getRequestedCleanerCount() > 3) {
+        if (req.getRequestedCleanerCount() == null ||
+                req.getRequestedCleanerCount() < 1 ||
+                req.getRequestedCleanerCount() > 3) {
             throw new IllegalArgumentException("requestedCleanerCount must be 1..3");
         }
+    }
 
+    private void validateWorkingDay(LocalDate date) {
         if (date.getDayOfWeek() == DayOfWeek.FRIDAY) {
-            throw new BookingConflictException("Friday Booking is not possible");
+            throw new BookingConflictException(BOOKING_NOT_POSSIBLE_FRIDAY_ERR_MSG);
+        }
+    }
+
+    private void validateWorkingHours(LocalTime startTime, LocalDateTime startDt, int duration) {
+
+        LocalTime WORK_START = LocalTime.of(8, 0);
+        LocalTime WORK_END = LocalTime.of(22, 0);
+
+        if (startTime.isBefore(WORK_START) || startTime.isAfter(WORK_END)) {
+            throw new BookingConflictException("Bookings are only allowed between 08:00 and 22:00");
         }
 
-        LocalDateTime endDt = startDt.plusHours(request.getDurationHours());
+        if(startDt.plusHours(duration).toLocalTime().isBefore(WORK_START) || startDt.plusHours(duration).toLocalTime().isAfter(WORK_END)){
+            throw new BookingConflictException("Bookings are only allowed between 08:00 and 22:00");
+        }
+    }
+
+    
+    // LOGGING
+    private void logBookingAttempt(CreateBookingRequest req,
+                                   LocalDate date,
+                                   LocalTime startTime,
+                                   LocalDateTime endDt) {
 
         log.info("Attempting booking on {} {} -> {} for {} cleaners (preferred vehicle={})",
-                date, startTime, endDt.toLocalTime(),
-                request.getRequestedCleanerCount(),
-                request.getPreferredVehicleId()
-        );
+                date,
+                startTime,
+                endDt.toLocalTime(),
+                req.getRequestedCleanerCount(),
+                req.getPreferredVehicleId());
+    }
 
-        List<Long> vehicleIds = new ArrayList<>();
 
-        if (request.getPreferredVehicleId() != null) {
-            vehicleIds.add(request.getPreferredVehicleId());
-        } else {
-            vehicleRepository.findAll().stream()
-                    .map(Vehicle::getId)
-                    .sorted()
-                    .forEach(vehicleIds::add);
+    // VEHICLE & CLEANER SELECTION
+    private List<Long> resolveVehicleOrder(Long preferredVehicleId) {
+        if (preferredVehicleId != null) {
+            return List.of(preferredVehicleId);
         }
+        return vehicleRepository.findAll().stream()
+                .map(Vehicle::getId)
+                .sorted()
+                .toList();
+    }
 
-        List<CleanerProfessional> selectedCleaners = null;
-        Long selectedVehicleId = null;
+    private List<CleanerProfessional> findAvailableCleaners(
+            List<Long> vehicleIds,
+            LocalDateTime startDt,
+            LocalDateTime endDt,
+            int requestedCount) {
 
         for (Long vid : vehicleIds) {
-
             List<CleanerProfessional> cleaners = cleanerRepository.findByVehicle_Id(vid);
-            if (cleaners.size() < request.getRequestedCleanerCount()) continue;
+            if (cleaners.size() < requestedCount) continue;
 
-            List<CleanerProfessional> freeCleaners =
-                    cleaners.stream()
-                            .filter(c -> isCleanerFree(c.getId(), startDt, endDt))
-                            .collect(Collectors.toList());
+            List<CleanerProfessional> freeCleaners = cleaners.stream()
+                    .filter(c -> isCleanerFree(c.getId(), startDt, endDt))
+                    .limit(requestedCount)
+                    .toList();
 
-            if (freeCleaners.size() >= request.getRequestedCleanerCount()) {
-                selectedCleaners = new ArrayList<>(freeCleaners.subList(0, request.getRequestedCleanerCount()));
-                selectedVehicleId = vid;
-                break;
+            if (freeCleaners.size() == requestedCount) {
+                return freeCleaners;
             }
         }
 
-        if (selectedCleaners == null) {
-            throw new BookingConflictException("No available team found for requested time and cleaner count");
-        }
+        throw new BookingConflictException("No available team found for requested time and cleaner count");
+    }
 
-        for (CleanerProfessional cp : selectedCleaners) {
-            if (availabilityBlockRepository.hasOverlap(cp.getId(), startDt, endDt)) {
+    private void verifyCleanerStillFree(List<CleanerProfessional> cleaners,
+                                        LocalDateTime start,
+                                        LocalDateTime end) {
+
+        for (CleanerProfessional cp : cleaners) {
+            if (availabilityBlockRepository.hasOverlap(cp.getId(), start, end)) {
                 throw new BookingConflictException(
-                        "Cleaner " + cp.getId() + " is no longer available for the requested slot");
+                        "Cleaner " + cp.getId() + " is no longer available for the requested slot"
+                );
             }
         }
+    }
+
+    // BOOKING CREATION
+    private Booking saveBooking(LocalDateTime startDt,
+                                LocalDateTime endDt,
+                                int durationHours,
+                                int cleanerCount,
+                                List<CleanerProfessional> selectedCleaners) {
 
         Booking booking = new Booking();
         booking.setStartDatetime(startDt);
         booking.setEndDatetime(endDt);
-        booking.setDurationInHours(request.getDurationHours());
-        booking.setRequestedCleanerCount(request.getRequestedCleanerCount());
+        booking.setDurationInHours(durationHours);
+        booking.setRequestedCleanerCount(cleanerCount);
 
-        List<BookingCleaner> bookingCleaners = new ArrayList<>();
-        for (CleanerProfessional chosen : selectedCleaners) {
-            BookingCleaner bc = new BookingCleaner();
-            bc.setBooking(booking);
-            bc.setCleaner(chosen);
-            bookingCleaners.add(bc);
-        }
-        booking.setAssignedCleaners(bookingCleaners);
+        List<BookingCleaner> links = selectedCleaners.stream()
+                .map(c -> {
+                    BookingCleaner bc = new BookingCleaner();
+                    bc.setBooking(booking);
+                    bc.setCleaner(c);
+                    return bc;
+                })
+                .toList();
 
-        Booking saved = bookingRepository.save(booking);
+        booking.setAssignedCleaners(links);
 
-        createAvailabilityBlocksTransactional(saved, selectedCleaners);
-
-        return BookingMapper.toResponse(saved);
+        return bookingRepository.save(booking);
     }
-
+    
+    // CLEANER FREE CHECK
     private boolean isCleanerFree(Long cleanerId, LocalDateTime start, LocalDateTime end) {
         return !availabilityBlockRepository.hasOverlap(cleanerId, start, end);
     }
